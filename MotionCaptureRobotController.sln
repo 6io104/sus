@@ -1,34 +1,566 @@
-﻿
-Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 14
-VisualStudioVersion = 14.0.25420.1
-MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MCRC", "MCRC\MCRC.csproj", "{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}"
-EndProject
-Global
-	GlobalSection(SolutionConfigurationPlatforms) = preSolution
-		Debug|Any CPU = Debug|Any CPU
-		Debug|x64 = Debug|x64
-		Debug|x86 = Debug|x86
-		Release|Any CPU = Release|Any CPU
-		Release|x64 = Release|x64
-		Release|x86 = Release|x86
-	EndGlobalSection
-	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Debug|x64.ActiveCfg = Debug|x64
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Debug|x64.Build.0 = Debug|x64
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Debug|x86.ActiveCfg = Debug|x86
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Debug|x86.Build.0 = Debug|x86
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Release|Any CPU.Build.0 = Release|Any CPU
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Release|x64.ActiveCfg = Release|x64
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Release|x64.Build.0 = Release|x64
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Release|x86.ActiveCfg = Release|x86
-		{EAE55E48-78E5-4A6E-9F96-9DF992D1FA22}.Release|x86.Build.0 = Release|x86
-	EndGlobalSection
-	GlobalSection(SolutionProperties) = preSolution
-		HideSolutionNode = FALSE
-	EndGlobalSection
-EndGlobal
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Windows.Forms;
+using System.Threading;
+using System.IO;
+using AForge;
+using AForge.Imaging;
+using AForge.Video;
+using AForge.Video.DirectShow;
+namespace MCRC
+{
+    public partial class MCRCMainForm : Form
+    {
+        // Opened video source
+        private IVideoSource videoSource = null;
+        private byte redMthreshold;
+        private byte greenMthreshold;
+        private byte blueMthreshold;
+        private double[] trackXBuff;
+        private double[] trackYBuff;
+        private int trackBuffSize;
+        private int disableCounter;
+        private int sizeX;
+        private int sizeY;
+        private int rightBorderLineY;
+        private int leftBorderLineY;
+        private int backBorderLineX;
+        private int frontBorderLineX;
+        private int finalPointX;
+        private int finalPointY;
+        private int currMarblePointX;
+        private int currMarblePointY;
+        private bool enableTrack;
+        private Thread motorThread;
+        private bool robotControlInProgress;
+        private int statusTimerTicksCounter;
+        private int frameCounter;
+        private const int ControlIsteresis = 10;
+        private const int ControlStatusIdle = 0;
+        private const int ControlStatusToRight = 1;
+        private const int ControlStatusToLeft = 2;
+
+        private readonly object finalPointXLocker = new object();
+        private int FinalPointX
+        {
+            get
+            {
+                int result;
+                lock (finalPointXLocker)
+                    result = finalPointX;
+                return result;
+            }
+            set
+            {
+                lock (finalPointXLocker)
+                    finalPointX = value;
+            }
+        }
+
+        private readonly object finalPointYLocker = new object();
+        private int FinalPointY
+        {
+            get
+            {
+                int result;
+                lock (finalPointYLocker)
+                    result = finalPointY;
+                return result;
+            }
+            set
+            {
+                lock (finalPointYLocker)
+                    finalPointY = value;
+            }
+        }
+
+        private readonly object currMarblePointXLocker = new object();
+        private int CurrMarblePointX
+        {
+            get
+            {
+                int result;
+                lock (currMarblePointXLocker)
+                    result = currMarblePointX;
+                return result;
+            }
+            set
+            {
+                lock (currMarblePointXLocker)
+                    currMarblePointX = value;
+            }
+        }
+
+        private readonly object currMarblePointYLocker = new object();
+        private int CurrMarblePointY
+        {
+            get
+            {
+                int result;
+                lock (currMarblePointYLocker)
+                    result = currMarblePointY;
+                return result;
+            }
+            set
+            {
+                lock (currMarblePointYLocker)
+                    currMarblePointY = value;
+            }
+        }
+
+        private readonly object rightBorderLocker = new object();
+        private int RightBorderLineY
+        {
+            get
+            {
+                int result;
+                lock (rightBorderLocker)
+                    result = rightBorderLineY;
+                return result;
+            }
+            set
+            {
+                lock (rightBorderLocker)
+                    rightBorderLineY = value;
+            }
+        }
+
+        private readonly object leftBorderLocker = new object();
+        private int LeftBorderLineY
+        {
+            get
+            {
+                int result;
+                lock (leftBorderLocker)
+                    result = leftBorderLineY;
+                return result;
+            }
+            set
+            {
+                lock (leftBorderLocker)
+                    leftBorderLineY = value;
+            }
+        }
+
+        private readonly object backBorderLocker = new object();
+        private int BackBorderLineX
+        {
+            get
+            {
+                int result;
+                lock (backBorderLocker)
+                    result = backBorderLineX;
+                return result;
+            }
+            set
+            {
+                lock (backBorderLocker)
+                    backBorderLineX = value;
+            }
+        }
+
+        private readonly object frontBorderLocker = new object();
+        private int FrontBorderLineX
+        {
+            get
+            {
+                int result;
+                lock (frontBorderLocker)
+                    result = frontBorderLineX;
+                return result;
+            }
+            set
+            {
+                lock (frontBorderLocker)
+                    frontBorderLineX = value;
+            }
+        }
+
+        private readonly object frameCounterLocker = new object();
+        private int FrameCounter
+        {
+            get
+            {
+                int result;
+                lock (frameCounterLocker)
+                    result = frameCounter;
+                return result;
+            }
+            set
+            {
+                lock (frameCounterLocker)
+                    frameCounter = value;
+            }
+        }
+
+        public MCRCMainForm()
+        {
+            InitializeComponent();
+
+            disableCounter = 0;
+            BinaryReader cfgFileReader = null;
+            videoSource = null;
+            redMthreshold = 20;
+            greenMthreshold = 30;
+            blueMthreshold = 30;
+            trackBuffSize = 5;
+            trackXBuff = new double[trackBuffSize];
+            trackYBuff = new double[trackBuffSize];
+            disableCounter = 0;
+            sizeX = 1079;
+            sizeY = 719;
+            rightBorderLineY = 1;
+            leftBorderLineY = 718;
+            backBorderLineX = 1;
+            frontBorderLineX = 1078;
+            FinalPointX = 0;
+            FinalPointY = 0;
+            currMarblePointX = 0;
+            currMarblePointY = 0;
+            enableTrack = false;
+            statusTimerTicksCounter = 0;
+            frameCounter = 0;
+            robotControlInProgress = false;
+
+            try
+            {
+                //Inizializza limiti dell'immagine da processare
+                FrontBorderNumericUpDown.Maximum = sizeX;
+                BackBorderNumericUpDown.Maximum = sizeX;
+                LeftBorderNumericUpDown.Maximum = sizeY;
+                RightBorderNumericUpDown.Maximum = sizeY;
+                cfgFileReader = new BinaryReader(File.Open("MCRC.Cfg", FileMode.Open));
+                FrontBorderNumericUpDown.Value = cfgFileReader.ReadDecimal();
+                BackBorderNumericUpDown.Value = cfgFileReader.ReadDecimal();
+                LeftBorderNumericUpDown.Value = cfgFileReader.ReadDecimal();
+                RightBorderNumericUpDown.Value = cfgFileReader.ReadDecimal();
+            }
+            catch
+            {
+                FrontBorderNumericUpDown.Value = sizeX - 1;
+                BackBorderNumericUpDown.Value = 1;
+                LeftBorderNumericUpDown.Value = sizeY - 1;
+                RightBorderNumericUpDown.Value = 1;
+                MessageBox.Show("MCRC.Cfg file not found");
+            }
+            finally
+            {
+                if (cfgFileReader != null)
+                    cfgFileReader.Close();
+            }
+        }
+
+        private void MDMCMainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            BinaryWriter cfgFileWriter = null;
+            try
+            {
+                //controlStatus = ControlStatusIdle;
+                robotControlInProgress = false;
+                if ((motorThread != null) && (motorThread.IsAlive))
+                {
+                    motorThread.Abort();
+                    if (motorThread != null) motorThread.Join();
+                    motorThread = null;
+                }
+                //Release mastership as soon as possible
+                //if (master != null) master.Dispose();
+                CloseVideoSource();
+                //Salva i limiti dell'immagine da processare
+                cfgFileWriter = new BinaryWriter(File.Open("MCRC.Cfg", FileMode.Create));
+                cfgFileWriter.Write(FrontBorderNumericUpDown.Value);
+                cfgFileWriter.Write(BackBorderNumericUpDown.Value);
+                cfgFileWriter.Write(LeftBorderNumericUpDown.Value);
+                cfgFileWriter.Write(RightBorderNumericUpDown.Value);
+            }
+            catch
+            {
+                MessageBox.Show("MCRC.Cfg file not created");
+            }
+            finally
+            {
+                if (cfgFileWriter != null)
+                    cfgFileWriter.Close();
+            }
+        }
+
+        private void selectVideoSourceToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            // Select local video source
+            LocalVideoSourceForm videoCaptureDeviceForm = new LocalVideoSourceForm();
+
+            if (videoCaptureDeviceForm.ShowDialog(this) == DialogResult.OK)
+            {
+                // Create video source
+                VideoCaptureDevice videoSource = new VideoCaptureDevice(videoCaptureDeviceForm.VideoDeviceName);
+                // Create and show video capabilities form
+                LocalVideoSourceCapabilitiesForm videoSourceCapabilitiesForm = new LocalVideoSourceCapabilitiesForm(videoSource);
+                if (videoSourceCapabilitiesForm.ShowDialog(this) == DialogResult.OK)
+                {
+                    // Set video capability
+                    videoSource.VideoResolution = videoSource.VideoCapabilities[videoSourceCapabilitiesForm.selectedCapabilityIndex];
+                    //CameraControlProperty _cameraControlProperty = new CameraControlProperty();
+                    videoSource.SetCameraProperty(CameraControlProperty.Focus, 0, CameraControlFlags.Manual);
+                    videoSource.SetCameraProperty(CameraControlProperty.Zoom, 100, CameraControlFlags.Manual);
+                    // Open it
+                    OpenVideoSource(videoSource);
+                }
+            }
+        }
+
+        // Open video source
+        private void OpenVideoSource(IVideoSource source)
+        {
+            StatusTimer.Enabled = true;
+            // Set busy cursor
+            this.Cursor = Cursors.WaitCursor;
+            // Close previous video source
+            CloseVideoSource();
+            disableCounter = 0;
+            enableTrack = false;
+            // Start new video source
+            VideoSourcePlayer.VideoSource = new AsyncVideoSource(source);
+            VideoSourcePlayer.Start();
+            videoSource = source;
+            this.Cursor = Cursors.Default;
+        }
+
+        // Close current video source
+        private void CloseVideoSource()
+        {
+            // Set busy cursor
+            this.Cursor = Cursors.WaitCursor;
+            // Stop current video source
+            VideoSourcePlayer.SignalToStop();
+            // Wait 2 seconds until camera stops
+            for (int i = 0; (i < 50) && (VideoSourcePlayer.IsRunning); i++)
+            {
+                Thread.Sleep(100);
+            }
+            if (VideoSourcePlayer.IsRunning)
+                VideoSourcePlayer.Stop();
+            VideoSourcePlayer.BorderColor = Color.Black;
+            this.Cursor = Cursors.Default;
+        }
+
+        private void VideoSourcePlayer_NewFrame(object sender, ref Bitmap image)
+        {
+            lock (this)
+            {
+                // Process the new frame
+                FrameProcessing(image);
+                FrameCounter++;
+            }
+        }
+
+        // Process the new frame 
+        private unsafe void FrameProcessing(Bitmap image)
+        {
+            // Salva le dimensioni dell'immagine
+            int height = image.Height;
+            BitmapData bitmapData = image.LockBits(new Rectangle(0, 0, image.Width, image.Height),
+                                                   ImageLockMode.ReadOnly, image.PixelFormat);
+            int frameSize = bitmapData.Stride * height;
+            byte* currPixel = (byte*)bitmapData.Scan0;
+
+            byte redPixelValue;
+            byte greenPixelValue;
+            byte bluePixelValue;
+            int pointNumber = 0;
+            double xmm = 0;
+            double ymm = 0;
+            double a = 0;
+            double b = 0;
+            // Elabora tutti i punti dell'immagine
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < bitmapData.Stride / 3; x++)
+                {
+                    // Ricava le componenti di colore del punto
+                    bluePixelValue = *currPixel;
+                    greenPixelValue = *(currPixel + 1);
+                    redPixelValue = *(currPixel + 2);
+                    // Confronta le componenti di colore del punto con i valori di soglia della biglia
+                    if ((redPixelValue < redMthreshold) && (greenPixelValue < greenMthreshold) && (bluePixelValue < blueMthreshold))
+                    {
+                        if ((y >= RightBorderLineY) && (y <= LeftBorderLineY) && (x >= BackBorderLineX) && (x <= FrontBorderLineX))
+                        {
+                            if (PixelsTestCheckBox.Checked)
+                            {
+                                *currPixel = 255;      // Blue
+                                *(currPixel + 1) = 0;  // Green
+                                *(currPixel + 2) = 0;  // Red
+                            }
+                            xmm = xmm + x;
+                            ymm = ymm + y;
+                            pointNumber++;
+                        }
+                    }
+                    currPixel = currPixel + 3;
+                }
+            }
+            /* Calcola il "baricentro" dei punti "attivi"
+            della biglia se non ci sono punti appartenenti 
+            alla biglia non calcola il baricentro*/
+
+            if (pointNumber > 0)
+            {
+                xmm = (xmm / pointNumber);
+                ymm = (ymm / pointNumber);
+
+                CurrMarblePointX = (int)xmm;
+                CurrMarblePointY = (int)ymm;
+
+                // Salva le coordinate del baricentro nel buffer del tracker
+                for (int i = 0; i < trackBuffSize - 1; i++)
+                {
+                    trackXBuff[i] = trackXBuff[i + 1];
+                    trackYBuff[i] = trackYBuff[i + 1];
+                }
+                trackXBuff[trackBuffSize - 1] = xmm;
+                trackYBuff[trackBuffSize - 1] = ymm;
+
+                if (disableCounter < trackBuffSize)
+                    disableCounter++;
+            
+                if ((disableCounter == trackBuffSize) && (enableTrack))
+                {
+                    double deltaX = trackXBuff[trackBuffSize - 1] - trackXBuff[trackBuffSize - 2];
+                    //Non disegna la traiettoria se la palla è ferma
+                    if ((-deltaX) > 2)
+                    {                     
+                        if (b != 0)
+                        {
+                            bool loop = true;
+                            double currX = xmm;
+                            double currY = ymm;
+                            double nextX;
+                            double nextY;
+                            do
+                            {
+                                //Calcola intersezione con BackBorderLine
+                                double y = b * BackBorderLineX + a;
+                                if ((y >= RightBorderLineY) && (y <= LeftBorderLineY))
+                                {
+                                    FinalPointX = BackBorderLineX;
+                                    FinalPointY = (int)y;
+                                    //Disegna la retta che interseca la BackBorderLine a partire dal punto corrente
+                                    nextX = FinalPointX;
+                                    nextY = FinalPointY;
+                                    Drawing.Line(bitmapData,
+                                                 new IntPoint((int)currX, (int)currY),
+                                                 new IntPoint((int)nextX, (int)nextY),
+                                                 Color.Red);
+                                    loop = false;
+                                }
+                                else
+                                {
+                                    if ((loop != false) && (y > LeftBorderLineY))
+                                    {
+                                        //Calcola intersezione con LeftBorderLine
+                                        double x = (LeftBorderLineY - a) / b;
+                                        //Calcola traiettoria del rimbalzo
+                                        b = -b;
+                                        a = LeftBorderLineY - b * x;
+                                        nextX = x;
+                                        nextY = LeftBorderLineY;
+                                        //Disegna la retta che interseca la LeftBorderLine a partire dal punto corrente
+                                        Drawing.Line(bitmapData,
+                                                     new IntPoint((int)currX, (int)currY),
+                                                     new IntPoint((int)nextX, (int)nextY),
+                                                     Color.Blue);
+                                        currX = nextX;
+                                        currY = nextY;
+                                    }
+                                    else
+                                    {
+                                        if ((loop != false) && (y < RightBorderLineY))
+                                        {
+                                            //Calcola intersezione con RightBorderLine
+                                            double x = (RightBorderLineY - a) / b;
+                                            b = -b;
+                                            a = RightBorderLineY - b * x;
+                                            nextX = x;
+                                            nextY = RightBorderLineY;
+                                            //Disegna la retta che interseca la LeftBorderLine a partire dal punto corrente
+                                            Drawing.Line(bitmapData,
+                                                         new IntPoint((int)currX, (int)currY),
+                                                         new IntPoint((int)nextX, (int)nextY),
+                                                         Color.Green);
+                                            currX = nextX;
+                                            currY = nextY;
+                                        }
+                                    }
+                                }
+                            } while (loop);
+                        }
+                    }
+                }
+            }
+            else
+                disableCounter = 0;
+            
+            // Draw left border line
+            Drawing.Line(bitmapData, new IntPoint(0, LeftBorderLineY),
+                                     new IntPoint(sizeX, LeftBorderLineY),
+                                     Color.DarkRed);
+            // Draw right border line
+            Drawing.Line(bitmapData, new IntPoint(0, RightBorderLineY),
+                                     new IntPoint(sizeX, RightBorderLineY),
+                                     Color.DarkRed);
+            // Draw back border line
+            Drawing.Line(bitmapData, new IntPoint(BackBorderLineX, 0),
+                                     new IntPoint(BackBorderLineX, sizeY),
+                                     Color.DarkRed);
+            // Draw front border line
+            Drawing.Line(bitmapData, new IntPoint(FrontBorderLineX, 0),
+                                     new IntPoint(FrontBorderLineX, sizeY),
+                                     Color.DarkRed);
+            image.UnlockBits(bitmapData);
+        }
+
+        private void BackBorderNumericUpDown_ValueChanged(object sender, EventArgs e)
+        {
+            BackBorderLineX = (int)BackBorderNumericUpDown.Value;
+        }
+
+        private void FrontBorderNumericUpDown_ValueChanged(object sender, EventArgs e)
+        {
+            FrontBorderLineX = (int)FrontBorderNumericUpDown.Value;
+        }
+
+        private void RightBorderNumericUpDown_ValueChanged(object sender, EventArgs e)
+        {
+            RightBorderLineY = (int)RightBorderNumericUpDown.Value;
+        }
+
+        private void LeftBorderNumericUpDown_ValueChanged(object sender, EventArgs e)
+        {
+            LeftBorderLineY = (int)LeftBorderNumericUpDown.Value;
+        }
+
+
+        private void StatusTimer_Tick(object sender, EventArgs e)
+        {
+            int w = LeftBorderLineY - RightBorderLineY;
+
+            IVideoSource videoSource = VideoSourcePlayer.VideoSource;
+
+            if (videoSource != null)
+            {
+                if (statusTimerTicksCounter == 10)
+                {
+                    FramesPerSecondLabel.Text = (FrameCounter / 2).ToString("F2");
+                    statusTimerTicksCounter = 0;
+                    FrameCounter = 0;
+                }
+                else
+                    statusTimerTicksCounter++;
+            }
+            yPosLabel.Text = FinalPointY.ToString();
+            xPosLabel.Text = FinalPointX.ToString();
+        }
+
+    }
+}
